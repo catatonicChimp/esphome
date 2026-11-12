@@ -487,6 +487,20 @@ void WiFiComponent::wifi_process_event_(LTWiFiEvent *event) {
       break;
     }
     case ESPHOME_EVENT_ID_WIFI_STA_CONNECTED: {
+#ifdef USE_RTL87XX
+      if (!this->wifi_sta_can_accept_success_()) {
+        ESP_LOGV(TAG, "Ignoring stale STA connected event");
+        break;
+      }
+#ifdef USE_WIFI_MANUAL_IP
+      if (const WiFiAP *config = this->get_selected_sta_();
+          config && config->get_manual_ip().has_value() &&
+          network::IPAddress(WiFi.localIP()) != config->get_manual_ip()->static_ip) {
+        ESP_LOGV(TAG, "Ignoring STA connected event with unexpected static IP");
+        break;
+      }
+#endif
+#endif
       // Processed in queue order, so a teardown event still ahead of this
       // CONNECTED was already consumed; a leftover flag is stale.
       this->lt_teardown_event_pending_ = false;
@@ -594,6 +608,17 @@ void WiFiComponent::wifi_process_event_(LTWiFiEvent *event) {
       break;
     }
     case ESPHOME_EVENT_ID_WIFI_STA_GOT_IP: {
+#ifdef USE_RTL87XX
+      if (!this->wifi_sta_can_accept_success_()) {
+        ESP_LOGV(TAG, "Ignoring stale STA got IP event");
+        break;
+      }
+#ifdef USE_WIFI_CONNECT_STATE_LISTENERS
+      // CONNECTED can precede DHCP; arm the notification when the IP is usable.
+      if (this->state_ == WIFI_COMPONENT_STATE_STA_CONNECTING)
+        this->pending_.connect_state = true;
+#endif
+#endif
       char ip_buf[network::IP_ADDRESS_BUFFER_SIZE], gw_buf[network::IP_ADDRESS_BUFFER_SIZE];
       ESP_LOGV(TAG, "static_ip=%s gateway=%s", network::IPAddress(WiFi.localIP()).str_to(ip_buf),
                network::IPAddress(WiFi.gatewayIP()).str_to(gw_buf));
@@ -859,26 +884,73 @@ int32_t WiFiComponent::get_wifi_channel() { return WiFi.channel(); }
 network::IPAddress WiFiComponent::wifi_subnet_mask_() { return {WiFi.subnetMask()}; }
 network::IPAddress WiFiComponent::wifi_gateway_ip_() { return {WiFi.gatewayIP()}; }
 network::IPAddress WiFiComponent::wifi_dns_ip_(int num) { return {WiFi.dnsIP(num)}; }
+#ifdef USE_RTL87XX
+bool WiFiComponent::wifi_sta_has_live_ip_() const {
+  // Realtek status() reports association, not DHCP completion. Check both.
+  return (WiFi.getMode() & WIFI_STA) != 0 && WiFi.status() == WL_CONNECTED && uint32_t(WiFi.localIP()) != 0;
+}
+
+bool WiFiComponent::wifi_sta_can_accept_success_() const {
+  return (this->state_ == WIFI_COMPONENT_STATE_STA_CONNECTING || this->state_ == WIFI_COMPONENT_STATE_STA_CONNECTED) &&
+         (this->sta_state_ == static_cast<uint8_t>(LTWiFiSTAState::CONNECTING) ||
+          this->sta_state_ == static_cast<uint8_t>(LTWiFiSTAState::CONNECTED)) &&
+         !this->error_from_callback_ && this->wifi_sta_has_live_ip_();
+}
+
+void WiFiComponent::wifi_reconcile_sta_(bool overflow) {
+  const bool live = this->wifi_sta_has_live_ip_();
+  const bool failed_attempt = overflow && (this->state_ == WIFI_COMPONENT_STATE_STA_CONNECTING ||
+                                           this->sta_state_ == static_cast<uint8_t>(LTWiFiSTAState::CONNECTING));
+  if (!failed_attempt &&
+      (live || (this->sta_state_ != static_cast<uint8_t>(LTWiFiSTAState::CONNECTED) && !this->connected_)))
+    return;
+
+  ESP_LOGW(TAG, "STA state mismatch; deferring recovery to connection state machine");
+#ifdef USE_WIFI_CONNECT_STATE_LISTENERS
+  const bool was_connected = this->connected_;
+  this->pending_.connect_state = false;
+#endif
+  this->sta_state_ = static_cast<uint8_t>(LTWiFiSTAState::ERROR_FAILED);
+  this->lt_teardown_event_pending_ = false;
+  this->update_connected_state_();
+#ifdef USE_WIFI_CONNECT_STATE_LISTENERS
+  if (was_connected)
+    this->notify_disconnect_state_listeners_();
+#endif
+}
+#endif
+
 bool WiFiComponent::wifi_loop_() {
-  // Use pop() directly instead of empty() — avoids redundant synchronization.
-  // LockFreeQueue: pop() costs 1 memw vs empty()'s 2 memw on Xtensa.
-  // FreeRTOSQueue: pop() is 1 critical section vs empty() + pop() = 2.
-  LTWiFiEvent *event = this->event_queue_.pop();
-  if (event == nullptr)
-    return false;
-
-  do {
-    wifi_process_event_(event);
+  bool refresh = false;
+#ifdef USE_RTL87XX
+  // Reject queued success after an overflow while connecting, before notifying listeners.
+  uint16_t dropped_before = this->event_queue_.get_and_reset_dropped_count();
+  if (dropped_before != 0) {
+    ESP_LOGW(TAG, "Dropped %" PRIu16 " WiFi events due to buffer overflow", dropped_before);
+    this->wifi_reconcile_sta_(true);
+    refresh = true;
+  }
+#endif
+  while (LTWiFiEvent *event = this->event_queue_.pop()) {
+    this->wifi_process_event_(event);
     delete event;  // NOLINT(cppcoreguidelines-owning-memory)
-  } while ((event = this->event_queue_.pop()) != nullptr);
+    refresh = true;
+  }
 
-  // Drops only occur when the queue is full, and only this loop drains it,
-  // so if pop() returned nullptr above we can skip this check.
   uint16_t dropped = this->event_queue_.get_and_reset_dropped_count();
   if (dropped > 0) {
     ESP_LOGW(TAG, "Dropped %" PRIu16 " WiFi events due to buffer overflow", dropped);
   }
-  return true;
+#ifdef USE_RTL87XX
+  const uint32_t now = App.get_loop_component_start_time();
+  if (dropped_before != 0 || dropped != 0 ||
+      (this->state_ == WIFI_COMPONENT_STATE_STA_CONNECTED && uint32_t(now - this->lt_last_link_check_) >= 1000)) {
+    this->lt_last_link_check_ = now;
+    this->wifi_reconcile_sta_(dropped != 0);
+    refresh = true;
+  }
+#endif
+  return refresh;
 }
 
 }  // namespace esphome::wifi

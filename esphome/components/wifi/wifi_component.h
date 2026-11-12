@@ -873,6 +873,11 @@ class WiFiComponent final : public Component {
   void wifi_event_callback_(arduino_event_id_t event, arduino_event_info_t info);
   void wifi_process_event_(LTWiFiEvent *event);
   void wifi_scan_done_callback_();
+#ifdef USE_RTL87XX
+  bool wifi_sta_has_live_ip_() const;
+  bool wifi_sta_can_accept_success_() const;
+  void wifi_reconcile_sta_(bool overflow);
+#endif
 #endif
 
   // Large/pointer-aligned members first
@@ -925,6 +930,9 @@ class WiFiComponent final : public Component {
   float output_power_{NAN};
   uint32_t action_started_;
   uint32_t last_connected_{0};
+#if defined(USE_LIBRETINY) && defined(USE_RTL87XX)
+  uint32_t lt_last_link_check_{0};
+#endif
 #ifdef USE_WIFI_AP_EXCLUSIVE
   uint32_t ap_exclusive_changed_{0};  // When the AP was last started or paused
 #endif
