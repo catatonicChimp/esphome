@@ -12,6 +12,8 @@ import subprocess
 #
 # This script is NOT loaded on BK72xx (IRAM_ATTR is a no-op there; the SDK
 # masks FIQ+IRQ around flash writes). On the remaining families:
+# - RTL8710A: image2 SRAM code is extracted from .ram_image2.text; inject
+#   KEEP(*(.sram.text*)) there, not into the external SDRAM text section.
 # - RTL8720C: stock linker consumes *(.sram.text*) into .ram.code_text.
 # - RTL8710B: stock linker has KEEP(*(.image2.ram.text*)) in .ram_image2.text,
 #   but ltchiptool's AmebaZ elf2bin (soc/ambz/binary.py) does NOT list
@@ -54,6 +56,7 @@ _LN_COPY = re.compile(r"(KEEP\(\*\(\.vectors\)\)[^\n]*\n)")
 # rather than silently shipping a binary with IRAM_ATTR code dropped from
 # one or both OTA slots.
 _AMBZ_DATA = re.compile(r"(\.ram_image2\.data\s*:\s*\n?\s*\{\s*\n)")
+_AMB1_TEXT = re.compile(r"(\.ram_image2\.text\s*:\s*\n?\s*\{\s*\n)")
 
 
 def _detect(env):
@@ -76,6 +79,7 @@ def _detect(env):
 
 KNOWN_VARIANTS = frozenset({
     "LN882H",
+    "RTL8710A",
     "RTL8710B",
     "RTL8720C",
 })
@@ -95,6 +99,7 @@ def _inject_keep(host_section):
 # - BK72xx (all): SDK masks FIQ+IRQ around flash writes, IRAM_ATTR is no-op.
 _PATCHERS_BY_VARIANT = {
     "LN882H": (_inject_keep(_LN_COPY),),
+    "RTL8710A": (_inject_keep(_AMB1_TEXT),),
     "RTL8710B": (_inject_keep(_AMBZ_DATA),),
 }
 
