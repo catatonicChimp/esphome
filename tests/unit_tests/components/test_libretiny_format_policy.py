@@ -26,18 +26,25 @@ constexpr int FDB_NO_ERR = 0;
 struct Database { bool not_format = false; };
 std::vector<int> calls;
 bool format_allowed;
+bool configure_succeeds, bound;
 int init_result, errors, successes;
 #define LT_E(...) (++errors)
 #define LT_I(...) (++successes)
 #if defined(LT_AMB1_EXPERIMENTAL_KVS) && LT_AMB1_EXPERIMENTAL_KVS
 constexpr int FDB_KVDB_CTRL_SET_NOT_FORMAT = 9;
+extern "C" void lt_amb1_preferences_configure() {
+  assert(calls.empty());
+  calls.push_back(0);
+  bound = configure_succeeds;
+}
 extern "C" int amb1_preferences_sdk_format_allowed(void) {
+  assert(calls == std::vector<int>{0});
   calls.push_back(1);
-  return format_allowed;
+  return bound && format_allowed;
 }
 void fdb_kvdb_control(Database *db, int command, void *arg) {
   assert(command == FDB_KVDB_CTRL_SET_NOT_FORMAT);
-  assert(calls == std::vector<int>{1});
+  assert((calls == std::vector<int>{0, 1}));
   calls.push_back(2);
   db->not_format = *static_cast<bool *>(arg);
 }
@@ -48,13 +55,19 @@ int fdb_kvdb_init(Database *db, const char *name, const char *partition,
   assert(std::strcmp(partition, "kvs") == 0);
   assert(defaults == nullptr && user_data == nullptr);
 #if defined(LT_AMB1_EXPERIMENTAL_KVS) && LT_AMB1_EXPERIMENTAL_KVS
-  assert((calls == std::vector<int>{1, 2}));
-  assert(db->not_format == !format_allowed);
+  assert((calls == std::vector<int>{0, 1, 2}));
+  assert(db->not_format == !(bound && format_allowed));
 #else
   assert(calls.empty());
   assert(!db->not_format);
 #endif
   calls.push_back(3);
+#if defined(LT_AMB1_EXPERIMENTAL_KVS) && LT_AMB1_EXPERIMENTAL_KVS
+  if (!bound) {
+    assert(db->not_format);
+    return -1;
+  }
+#endif
   return init_result;
 }
 namespace esphome::libretiny {
@@ -64,16 +77,28 @@ struct LibreTinyPreferences { Database db; void open(); };
 
 CASES = r"""
 int main() {
-  for (bool allowed : {false, true}) {
-    for (int result : {FDB_NO_ERR, -1}) {
-      calls.clear(); errors = successes = 0;
-      format_allowed = allowed;
-      init_result = result;
-      esphome::libretiny::LibreTinyPreferences prefs;
-      prefs.open();
-      assert(errors == (result != FDB_NO_ERR));
-      assert(successes == (result == FDB_NO_ERR));
-      assert(calls.back() == 3);
+  for (bool configure_ok : {false, true}) {
+    for (bool allowed : {false, true}) {
+      for (int result : {FDB_NO_ERR, -1}) {
+        calls.clear(); errors = successes = 0;
+        configure_succeeds = configure_ok;
+        bound = false;
+        format_allowed = allowed;
+        init_result = result;
+        esphome::libretiny::LibreTinyPreferences prefs;
+        prefs.open();
+        bool failed = result != FDB_NO_ERR;
+#if defined(LT_AMB1_EXPERIMENTAL_KVS) && LT_AMB1_EXPERIMENTAL_KVS
+        failed = failed || !configure_ok;
+        if (!configure_ok) {
+          assert(!bound);
+          assert(prefs.db.not_format);
+        }
+#endif
+        assert(errors == failed);
+        assert(successes == !failed);
+        assert(calls.back() == 3);
+      }
     }
   }
 }

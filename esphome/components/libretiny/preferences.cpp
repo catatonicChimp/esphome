@@ -7,6 +7,7 @@
 #include <vector>
 
 #if defined(LT_AMB1_EXPERIMENTAL_KVS) && LT_AMB1_EXPERIMENTAL_KVS
+extern "C" void lt_amb1_preferences_configure();
 extern "C" int amb1_preferences_sdk_format_allowed(void);
 #endif
 
@@ -65,6 +66,8 @@ bool LibreTinyPreferenceBackend::load(uint8_t *data, size_t len) {
 
 void LibreTinyPreferences::open() {
 #if defined(LT_AMB1_EXPERIMENTAL_KVS) && LT_AMB1_EXPERIMENTAL_KVS
+  // FAL binding needs the scheduler running, so defer it until preferences open.
+  lt_amb1_preferences_configure();
   // Existing KVS ownership does not authorize formatting a damaged database.
   bool not_format = !amb1_preferences_sdk_format_allowed();
   fdb_kvdb_control(&this->db, FDB_KVDB_CTRL_SET_NOT_FORMAT, &not_format);
