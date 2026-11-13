@@ -63,19 +63,29 @@ void CaptivePortal::handle_config(AsyncWebServerRequest *request) {
 void CaptivePortal::handle_wifisave(AsyncWebServerRequest *request) {
   const auto &ssid = request->arg("ssid");
   const auto &psk = request->arg("psk");
-  ESP_LOGI(TAG,
-           "Requested WiFi Settings Change:\n"
-           "  SSID='%s'\n"
-           "  Password=" LOG_SECRET("'%s'"),
-           ssid.c_str(), psk.c_str());
+  ESP_LOGI(TAG, "WiFi settings change requested");
 #ifdef USE_ESP8266
   // ESP8266 is single-threaded, call directly
-  wifi::global_wifi_component->save_wifi_sta(ssid.c_str(), psk.c_str());
+  if (wifi::global_wifi_component->save_wifi_sta_with_result(ssid.c_str(), psk.c_str())) {
+    request->send(200, ESPHOME_F("text/plain"), ESPHOME_F("Saved. Connecting..."));
+  } else {
+    ESP_LOGW(TAG, "WiFi settings persistence failed; runtime connection requested");
+    request->send(500, ESPHOME_F("text/plain"),
+                  ESPHOME_F("Could not save settings. Connection requested; settings may be lost on restart."));
+  }
 #else
-  // Defer save to main loop thread to avoid NVS operations from HTTP thread
-  this->defer([ssid, psk]() { wifi::global_wifi_component->save_wifi_sta(ssid.c_str(), psk.c_str()); });
+  // Never retain the request across defer: it may be destroyed on disconnect.
+  // The HTTP response only acknowledges acceptance; the persistence result is logged, not available over HTTP.
+  this->defer([ssid, psk]() {
+    if (wifi::global_wifi_component->save_wifi_sta_with_result(ssid.c_str(), psk.c_str())) {
+      ESP_LOGI(TAG, "WiFi settings saved; runtime connection requested");
+    } else {
+      ESP_LOGW(TAG, "WiFi settings persistence failed; runtime connection requested");
+    }
+  });
+  request->send(202, ESPHOME_F("text/plain"),
+                ESPHOME_F("Connection requested; persistence not yet confirmed."));
 #endif
-  request->send(200, ESPHOME_F("text/plain"), ESPHOME_F("Saved. Connecting..."));
 }
 
 void CaptivePortal::setup() {

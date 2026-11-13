@@ -501,6 +501,14 @@ class WiFiComponent final : public Component {
   void save_wifi_sta(const std::string &ssid, const std::string &password);
   void save_wifi_sta(const char *ssid, const char *password);
   void save_wifi_sta(StringRef ssid, StringRef password) { this->save_wifi_sta(ssid.c_str(), password.c_str()); }
+  /// Install credentials and request a connection even if persistence fails. Returns true only if save and sync succeed.
+  bool save_wifi_sta_with_result(const char *ssid, const char *password);
+  bool save_wifi_sta_with_result(const std::string &ssid, const std::string &password) {
+    return this->save_wifi_sta_with_result(ssid.c_str(), password.c_str());
+  }
+  bool save_wifi_sta_with_result(StringRef ssid, StringRef password) {
+    return this->save_wifi_sta_with_result(ssid.c_str(), password.c_str());
+  }
 
   // ========== INTERNAL METHODS ==========
   // (In most use cases you won't need these)

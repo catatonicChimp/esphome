@@ -1202,13 +1202,17 @@ void WiFiComponent::save_wifi_sta(const std::string &ssid, const std::string &pa
   this->save_wifi_sta(ssid.c_str(), password.c_str());
 }
 void WiFiComponent::save_wifi_sta(const char *ssid, const char *password) {
+  this->save_wifi_sta_with_result(ssid, password);
+}
+bool WiFiComponent::save_wifi_sta_with_result(const char *ssid, const char *password) {
   SavedWifiSettings save{};  // zero-initialized - all bytes set to \0, guaranteeing null termination
   strncpy(save.ssid, ssid, sizeof(save.ssid) - 1);              // max 32 chars, byte 32 remains \0
   strncpy(save.password, password, sizeof(save.password) - 1);  // max 64 chars, byte 64 remains \0
-  this->pref_.save(&save);
-  // ensure it's written immediately
-  global_preferences->sync();
+  const bool saved = this->pref_.save(&save);
+  // Sync even after a failed save so the backend can finish pending work.
+  const bool synced = global_preferences->sync();
 
+  // Keep runtime provisioning usable even when flash persistence fails.
   WiFiAP sta{};
   sta.set_ssid(ssid);
   sta.set_password(password);
@@ -1216,6 +1220,7 @@ void WiFiComponent::save_wifi_sta(const char *ssid, const char *password) {
 
   // Trigger connection attempt (exits cooldown if needed, no-op if already connecting/connected)
   this->connect_soon_();
+  return saved && synced;
 }
 
 void WiFiComponent::connect_soon_() {
