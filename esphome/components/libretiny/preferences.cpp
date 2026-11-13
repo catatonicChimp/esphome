@@ -6,6 +6,10 @@
 #include <cstring>
 #include <vector>
 
+#if defined(LT_AMB1_EXPERIMENTAL_KVS) && LT_AMB1_EXPERIMENTAL_KVS
+extern "C" int amb1_preferences_sdk_format_allowed(void);
+#endif
+
 namespace esphome::libretiny {
 
 static const char *const TAG = "preferences";
@@ -60,7 +64,11 @@ bool LibreTinyPreferenceBackend::load(uint8_t *data, size_t len) {
 }
 
 void LibreTinyPreferences::open() {
-  //
+#if defined(LT_AMB1_EXPERIMENTAL_KVS) && LT_AMB1_EXPERIMENTAL_KVS
+  // Existing KVS ownership does not authorize formatting a damaged database.
+  bool not_format = !amb1_preferences_sdk_format_allowed();
+  fdb_kvdb_control(&this->db, FDB_KVDB_CTRL_SET_NOT_FORMAT, &not_format);
+#endif
   fdb_err_t err = fdb_kvdb_init(&this->db, "esphome", "kvs", NULL, NULL);
   if (err != FDB_NO_ERR) {
     LT_E("fdb_kvdb_init(...) failed: %d", err);
